@@ -1,11 +1,19 @@
+from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 import pandas as pd
 
 year = 2025
+LOCAL = True
+
+this_dir = Path(__file__).parent.parent.parent
+print(this_dir)
 
 def get_schedule():
+
+    if LOCAL:
+        return pd.read_csv(Path(this_dir).joinpath("data",f"schedule_{year}.csv"))
 
     url = f"https://www.sports-reference.com/cfb/years/{year}-schedule.html"
 
@@ -41,6 +49,9 @@ def get_schedule():
         if col in df.columns:
             df[col] = df[col].str.replace(r"\(\d+\)", "", regex=True)
 
+    # Save locally
+    df.to_csv(Path(this_dir).joinpath("data",f"schedule_{year}.csv"), index=False)
+
     return df
 
 def get_teams(schedule_df):
@@ -51,6 +62,7 @@ def get_teams(schedule_df):
     return teams
 
 def main():
+
     schedule = get_schedule()
     teams = get_teams(schedule)
     print("Teams:", teams)

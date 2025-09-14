@@ -33,15 +33,27 @@ def get_schedule():
 
     df = pd.DataFrame(rows, columns=headers[1:])  # Exclude the first header "Rk"
 
+    # Remove non-breaking spaces from all string cells
+    df = df.applymap(lambda x: x.replace('\xa0', ' ') if isinstance(x, str) else x)
+
     # Sanitize team names to get rid of ranking
     for col in ["Winner", "Loser"]:
         if col in df.columns:
             df[col] = df[col].str.replace(r"\(\d+\)", "", regex=True)
 
-    print(df)
+    return df
+
+def get_teams(schedule_df):
+    winners = schedule_df["Winner"].unique().tolist()
+    losers = schedule_df["Loser"].unique().tolist()
+    teams = list(set(winners) | set(losers))
+    teams.sort()
+    return teams
 
 def main():
-    get_schedule()
+    schedule = get_schedule()
+    teams = get_teams(schedule)
+    print("Teams:", teams)
 
 
 if __name__ == "__main__":

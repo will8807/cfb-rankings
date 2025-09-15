@@ -1,10 +1,12 @@
 from pathlib import Path
+import random
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 import pandas as pd
 
 year = 2025
+week = 2
 LOCAL = True
 
 this_dir = Path(__file__).parent.parent.parent
@@ -61,11 +63,40 @@ def get_teams(schedule_df):
     teams.sort()
     return teams
 
+def get_rankings(schedule_df, teams, mode="randomized"):
+    if mode == "randomized":
+        num_runs = 1000
+        num_teams = len(teams)
+        for n in range(num_runs):
+            ranks = list(range(1,num_teams+1))
+            random.shuffle(ranks)
+            rankings = dict(zip(teams, ranks))
+            for wk in range(1, week+1):
+                week_schedule = schedule_df[schedule_df["Wk"] == wk]
+                for _, game in week_schedule.iterrows():
+                    winner = game["Winner"]
+                    loser = game["Loser"]
+                    if rankings[winner] > rankings[loser]:
+                        # Swap ranks
+                        rankings[winner], rankings[loser] = rankings[loser], rankings[winner]
+
+        # Average ranks over all runs
+        final_rankings = {team: 0 for team in teams}
+        for team in teams:
+            final_rankings[team] = rankings[team] / num_runs
+        sorted_rankings = dict(sorted(final_rankings.items(), key=lambda item: item[1]))
+        print("Final Rankings (Randomized):")   
+        for rank, (team, avg_rank) in enumerate(sorted_rankings.items(), start=1):
+            print(f"{rank}. {team} (Avg Rank: {avg_rank:.2f})")
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
 def main():
 
     schedule = get_schedule()
     teams = get_teams(schedule)
-    print("Teams:", teams)
+    rankings = get_rankings(schedule, teams, mode="randomized")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "selenium",
     "beautifulsoup4",
-    "pandas"
+    "pandas",
+    "matplotlib>=3.10.7",
 ]
 
 

@@ -320,10 +320,13 @@ def get_rankings(schedule_df, teams, create_plot=False):
         avg_lost_to_win_rate = strength_of_schedule / len(lost_to_opponents) if lost_to_opponents else 0.0
         avg_opp_win_rate = (strength_of_victory + strength_of_schedule) / len(record['opponents']) if record['opponents'] else 0.0
         
-        # Quality-based Adjusted Win % = (0.6 * Raw_Wins + 0.4 * Quality_Wins_Value) / Total_Games
-        # This heavily penalizes teams that only beat weak opponents
+        # Quality-based Adjusted Win % (no penalties)
         if total_games > 0:
-            adjusted_wins = (0.6 * record['wins']) + (0.4 * strength_of_victory)
+            # Base formula: 40% raw wins, 60% strength of victory
+            adjusted_wins = (0.4 * record['wins']) + (0.6 * strength_of_victory)
+            
+            # No penalties applied
+            
             adjusted_win_pct = adjusted_wins / total_games
         else:
             adjusted_win_pct = 0.000
@@ -353,33 +356,28 @@ def get_rankings(schedule_df, teams, create_plot=False):
             'h2h_beaten_team': None   # Track which team was beaten in head-to-head
         })
     
-    # Apply head-to-head tiebreaker for teams with identical records  
+    # Apply head-to-head tiebreaker only for teams with very similar adjusted win percentages
     def head_to_head_tiebreaker(team_list):
         """Apply head-to-head results as tiebreaker for teams with identical records"""
-        # First, find all teams with identical raw FBS records
-        record_groups = {}
+        from collections import defaultdict
         
+        # Group teams by their actual records (wins-losses-ties)
+        record_groups = defaultdict(list)
         for team in team_list:
             record_key = (team['wins'], team['losses'], team['ties'])
-            if record_key not in record_groups:
-                record_groups[record_key] = []
             record_groups[record_key].append(team)
         
-        # Apply head-to-head within groups of exactly 2 teams with identical records
         final_ranking = []
-        processed_teams = set()
         
-        for team in team_list:
-            if team['team'] in processed_teams:
-                continue
-                
-            record_key = (team['wins'], team['losses'], team['ties'])
-            tied_teams = [t for t in record_groups[record_key] if t['team'] not in processed_teams]
-            
-            if len(tied_teams) == 2:
-                # Apply head-to-head for exactly 2 teams with identical records
-                team1, team2 = tied_teams[0], tied_teams[1]
-                print(f"Checking H2H: {team1['team']} vs {team2['team']} (both {team1['wins']}-{team1['losses']})")
+        # Process each record group
+        for record_key, teams_with_same_record in record_groups.items():
+            if len(teams_with_same_record) <= 1:
+                # Single team or no teams with this record
+                final_ranking.extend(teams_with_same_record)
+            elif len(teams_with_same_record) == 2:
+                # Two teams with identical records - check head-to-head
+                team1, team2 = teams_with_same_record
+                print(f"Same record ({team1['wins']}-{team1['losses']}): {team1['team']} vs {team2['team']}")
                 
                 # Check if team1 beat team2 head-to-head
                 if team2['team'] in team1['defeated_opponents']:
@@ -393,54 +391,50 @@ def get_rankings(schedule_df, teams, create_plot=False):
                     final_ranking.extend([team2, team1])
                     print(f"  {team2['team']} ranked above {team1['team']} (H2H win)")
                 else:
-                    # No head-to-head, keep order by adjusted win %
-                    sorted_tied = sorted(tied_teams, key=lambda x: x['adjusted_win_pct'], reverse=True)
-                    final_ranking.extend(sorted_tied)
+                    # No head-to-head, sort by adjusted win %
+                    teams_with_same_record.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
+                    final_ranking.extend(teams_with_same_record)
                     print(f"  No H2H game, using adjusted win %")
+            else:
+                # Multiple teams with same record - check for head-to-head violations
+                teams_with_same_record.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
+                print(f"Multiple teams with record ({record_key[0]}-{record_key[1]}): {[t['team'] for t in teams_with_same_record]}")
                 
-                # Mark both teams as processed
-                for t in tied_teams:
-                    processed_teams.add(t['team'])
+                # Check for head-to-head violations and fix them (with cycle detection)
+                max_iterations = 20  # Prevent infinite loops
+                iteration_count = 0
+                made_changes = True
+                
+                while made_changes and iteration_count < max_iterations:
+                    made_changes = False
+                    iteration_count += 1
                     
-            elif len(tied_teams) > 2:
-                # For multi-team ties (3+), still apply pairwise head-to-head adjustments
-                print(f"Multi-team tie ({len(tied_teams)} teams with {tied_teams[0]['wins']}-{tied_teams[0]['losses']}): applying pairwise H2H")
-                
-                # Start with adjusted win % order
-                sorted_tied = sorted(tied_teams, key=lambda x: x['adjusted_win_pct'], reverse=True)
-                
-                # Apply simple pairwise head-to-head swaps (limited iterations to avoid infinite loops)
-                for iteration in range(3):  # Maximum 3 passes
-                    swapped = False
-                    for i in range(len(sorted_tied) - 1):
-                        for j in range(i + 1, len(sorted_tied)):
-                            team_higher = sorted_tied[i]  # Currently ranked higher
-                            team_lower = sorted_tied[j]   # Currently ranked lower
+                    for i in range(len(teams_with_same_record)):
+                        for j in range(i + 1, len(teams_with_same_record)):
+                            team_higher = teams_with_same_record[i]  # Currently ranked higher
+                            team_lower = teams_with_same_record[j]   # Currently ranked lower
                             
-                            # If lower team beat higher team head-to-head, swap them
+                            # Check if the lower-ranked team beat the higher-ranked team
                             if team_higher['team'] in team_lower['defeated_opponents']:
-                                print(f"  H2H: {team_lower['team']} beat {team_higher['team']} - swapping positions")
+                                # H2H violation: lower team beat higher team, so move lower team above
+                                teams_with_same_record.pop(j)  # Remove from current position
+                                teams_with_same_record.insert(i, team_lower)  # Insert at higher position
                                 team_lower['h2h_tiebreaker'] = True
                                 team_lower['h2h_beaten_team'] = team_higher['team']
-                                sorted_tied[i], sorted_tied[j] = sorted_tied[j], sorted_tied[i]
-                                swapped = True
+                                print(f"  {team_lower['team']} moved above {team_higher['team']} (H2H win)")
+                                made_changes = True
                                 break
-                        if swapped:
+                        if made_changes:
                             break
-                    if not swapped:
-                        break  # No more swaps needed
                 
-                final_ranking.extend(sorted_tied)
+                if iteration_count >= max_iterations:
+                    print(f"  Stopped H2H adjustments after {max_iterations} iterations to prevent cycles")
                 
-                # Mark all teams as processed
-                for t in tied_teams:
-                    processed_teams.add(t['team'])
-                    
-            elif team['team'] not in processed_teams:
-                # Single team, add as-is
-                final_ranking.append(team)
-                processed_teams.add(team['team'])
-                
+                final_ranking.extend(teams_with_same_record)
+        
+        # Don't re-sort by adjusted win percentage - preserve head-to-head adjustments
+        # final_ranking.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
+        
         return final_ranking
     
     # Sort by adjusted win percentage first
@@ -849,14 +843,20 @@ def main():
     parser = argparse.ArgumentParser(description='College Football Rankings Calculator')
     parser.add_argument('--update', action='store_true', 
                         help='Download fresh data from sports-reference.com (default: use local CSV)')
+    parser.add_argument('--year', type=int, default=2025,
+                        help='Season year to analyze (default: 2025)')
     parser.add_argument('--team', type=str,
                         help='Analyze schedule for specific team (e.g., "Ohio State")')
     parser.add_argument('--compare', type=str, nargs=2, metavar=('TEAM1', 'TEAM2'),
                         help='Compare two teams (e.g., --compare "Ohio State" "Michigan")')
     parser.add_argument('--plot', action='store_true',
-                        help='Generate scatter plot for top 25 teams (adjusted win% vs SOS)')
+                        help='Generate scatter plot for top 25 teams (adjusted win%% vs SOS)')
     
     args = parser.parse_args()
+    
+    # Set the global year variable based on CLI argument
+    global year
+    year = args.year
     
     schedule = get_schedule(update=args.update)
     teams = get_teams(schedule)

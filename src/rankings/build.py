@@ -357,96 +357,56 @@ def get_rankings(schedule_df, teams, create_plot=False):
         })
     
     # Apply head-to-head tiebreaker only for teams with very similar adjusted win percentages
-    def head_to_head_tiebreaker(team_list):
-        """Apply head-to-head results as tiebreaker for teams with identical records"""
-        from collections import defaultdict
+    def head_to_head_tiebreaker(teams):
+        """Apply head-to-head tiebreaking for teams with similar adjusted win percentages."""
+        # Make one pass through the sorted teams looking for head-to-head violations
+        result = teams.copy()
+        changes_made = True
+        iteration_count = 0
+        max_iterations = 3
         
-        # Group teams by their actual records (wins-losses-ties)
-        record_groups = defaultdict(list)
-        for team in team_list:
-            record_key = (team['wins'], team['losses'], team['ties'])
-            record_groups[record_key].append(team)
-        
-        final_ranking = []
-        
-        # Process each record group
-        for record_key, teams_with_same_record in record_groups.items():
-            if len(teams_with_same_record) <= 1:
-                # Single team or no teams with this record
-                final_ranking.extend(teams_with_same_record)
-            elif len(teams_with_same_record) == 2:
-                # Two teams with identical records - check head-to-head
-                team1, team2 = teams_with_same_record
-                print(f"Same record ({team1['wins']}-{team1['losses']}): {team1['team']} vs {team2['team']}")
-                
-                # Check if team1 beat team2 head-to-head
-                if team2['team'] in team1['defeated_opponents']:
-                    team1['h2h_tiebreaker'] = True
-                    team1['h2h_beaten_team'] = team2['team']
-                    final_ranking.extend([team1, team2])
-                    print(f"  {team1['team']} ranked above {team2['team']} (H2H win)")
-                elif team1['team'] in team2['defeated_opponents']:
-                    team2['h2h_tiebreaker'] = True
-                    team2['h2h_beaten_team'] = team1['team']
-                    final_ranking.extend([team2, team1])
-                    print(f"  {team2['team']} ranked above {team1['team']} (H2H win)")
-                else:
-                    # No head-to-head, sort by adjusted win %
-                    teams_with_same_record.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
-                    final_ranking.extend(teams_with_same_record)
-                    print(f"  No H2H game, using adjusted win %")
-            else:
-                # Multiple teams with same record - check for head-to-head violations
-                teams_with_same_record.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
-                print(f"Multiple teams with record ({record_key[0]}-{record_key[1]}): {[t['team'] for t in teams_with_same_record]}")
-                
-                # Check for head-to-head violations and fix them (with cycle detection)
-                max_iterations = 20  # Prevent infinite loops
-                iteration_count = 0
-                made_changes = True
-                
-                while made_changes and iteration_count < max_iterations:
-                    made_changes = False
-                    iteration_count += 1
+        while changes_made and iteration_count < max_iterations:
+            changes_made = False
+            iteration_count += 1
+            
+            for i in range(len(result)):
+                for j in range(i + 1, len(result)):
+                    team_higher = result[i]  # Currently ranked higher
+                    team_lower = result[j]   # Currently ranked lower
                     
-                    for i in range(len(teams_with_same_record)):
-                        for j in range(i + 1, len(teams_with_same_record)):
-                            team_higher = teams_with_same_record[i]  # Currently ranked higher
-                            team_lower = teams_with_same_record[j]   # Currently ranked lower
-                            
-                            # Check if the lower-ranked team beat the higher-ranked team
-                            if team_higher['team'] in team_lower['defeated_opponents']:
-                                # H2H violation: lower team beat higher team, so move lower team above
-                                teams_with_same_record.pop(j)  # Remove from current position
-                                teams_with_same_record.insert(i, team_lower)  # Insert at higher position
-                                team_lower['h2h_tiebreaker'] = True
-                                team_lower['h2h_beaten_team'] = team_higher['team']
-                                print(f"  {team_lower['team']} moved above {team_higher['team']} (H2H win)")
-                                made_changes = True
-                                break
-                        if made_changes:
+                    # Check if the lower-ranked team beat the higher-ranked team
+                    if team_higher['team'] in team_lower['defeated_opponents']:
+                        # Also check if their adj win % is close enough to justify H2H tiebreaker
+                        adj_win_diff = abs(team_higher['adjusted_win_pct'] - team_lower['adjusted_win_pct'])
+                        
+                        # Only apply H2H if teams are close in adj win % (within 0.025)
+                        if adj_win_diff <= 0.025:
+                            # H2H violation: lower team beat higher team, so move lower team above
+                            result.pop(j)  # Remove from current position
+                            result.insert(i, team_lower)  # Insert at higher position
+                            team_lower['h2h_tiebreaker'] = True
+                            team_lower['h2h_beaten_team'] = team_higher['team']
+                            print(f"  {team_lower['team']} moved above {team_higher['team']} (H2H win)")
+                            changes_made = True
                             break
-                
-                if iteration_count >= max_iterations:
-                    print(f"  Stopped H2H adjustments after {max_iterations} iterations to prevent cycles")
-                
-                final_ranking.extend(teams_with_same_record)
+                if changes_made:
+                    break
         
-        # Don't re-sort by adjusted win percentage - preserve head-to-head adjustments
-        # final_ranking.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
+        if iteration_count >= max_iterations:
+            print(f"  Stopped H2H adjustments after {max_iterations} iterations")
         
-        return final_ranking
+        return result
     
-    # Sort by adjusted win percentage first
+    # Sort by adjusted win percentage first (primary ranking criteria)
     team_stats.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
     
-    # Apply head-to-head tiebreaker
+    # Apply head-to-head tiebreaker only for teams with very similar adjusted win percentages
     team_stats = head_to_head_tiebreaker(team_stats)
     
     print("Final Rankings (Power 4 Conference Weighted Win Percentage):")
-    print("=" * 160)
+    print("=" * 105)
     print(f"{'Rank':<4} {'Team':<25} {'Overall Record':<15} {'FBS Record':<12} {'Raw Win%':<9} {'Adj Win%':<9} {'P4 Wins':<8} {'SoV':<7} {'H2H Beat':<12}")
-    print("=" * 160)
+    print("=" * 105)
     for rank, stats in enumerate(team_stats[:25], start=1):
         team = stats['team']
         wins = stats['wins']
@@ -528,7 +488,7 @@ def get_team_schedule(schedule_df, team_name, rankings_dict=None):
 def get_team_schedule(schedule_df, team_name, rankings_dict=None):
     """Extract a team's schedule with opponent records and rankings for analysis"""
     
-    # Find all games involving the specified team
+    # Find all games involving the specified team (FBS only)
     team_games = schedule_df[
         (schedule_df["Winner"] == team_name) | (schedule_df["Loser"] == team_name)
     ].copy()
@@ -537,6 +497,17 @@ def get_team_schedule(schedule_df, team_name, rankings_dict=None):
         print(f"No games found for team: {team_name}")
         print(f"Available teams: {sorted(set(schedule_df['Winner'].tolist() + schedule_df['Loser'].tolist()))[:10]}...")
         return None
+    
+    # Get overall schedule to calculate overall record (including FCS games)
+    overall_schedule = get_schedule()
+    overall_schedule = overall_schedule[overall_schedule["Wk"] <= week]
+    overall_games = overall_schedule[
+        (overall_schedule["Winner"] == team_name) | (overall_schedule["Loser"] == team_name)
+    ].copy()
+    
+    # Calculate overall record (all games)
+    overall_wins = len(overall_games[overall_games["Winner"] == team_name])
+    overall_losses = len(overall_games[overall_games["Loser"] == team_name])
     
     # Calculate opponent records
     all_teams = set(schedule_df["Winner"].tolist() + schedule_df["Loser"].tolist())
@@ -549,8 +520,8 @@ def get_team_schedule(schedule_df, team_name, rankings_dict=None):
     
     # Process each game
     schedule_analysis = []
-    team_wins = 0
-    team_losses = 0
+    team_wins = 0  # FBS wins
+    team_losses = 0  # FBS losses
     
     for _, game in team_games.iterrows():
         is_winner = game["Winner"] == team_name
@@ -578,25 +549,116 @@ def get_team_schedule(schedule_df, team_name, rankings_dict=None):
     # Sort by week
     schedule_analysis.sort(key=lambda x: x['week'] if isinstance(x['week'], (int, float)) else 999)
     
+    # Define Power 4 teams for calculation
+    power4_teams = {
+        # SEC
+        'Alabama', 'Arkansas', 'Auburn', 'Florida', 'Georgia', 'Kentucky', 'Louisiana State', 
+        'Mississippi', 'Mississippi State', 'Missouri', 'South Carolina', 'Tennessee', 
+        'Texas', 'Texas A&M', 'Vanderbilt', 'Oklahoma',
+        
+        # Big Ten  
+        'Illinois', 'Indiana', 'Iowa', 'Maryland', 'Michigan', 'Michigan State', 'Minnesota',
+        'Nebraska', 'Northwestern', 'Ohio State', 'Oregon', 'Penn State', 'Purdue', 
+        'Rutgers', 'Southern California', 'UCLA', 'Washington', 'Wisconsin',
+        
+        # Big 12
+        'Arizona', 'Arizona State', 'Baylor', 'Brigham Young', 'Cincinnati', 'Colorado', 
+        'Houston', 'Iowa State', 'Kansas', 'Kansas State', 'Oklahoma State', 'Texas Christian', 
+        'Texas Tech', 'Utah', 'West Virginia',
+        
+        # ACC
+        'Boston College', 'California', 'Clemson', 'Duke', 'Florida State', 'Georgia Tech',
+        'Louisville', 'Miami (FL)', 'North Carolina', 'North Carolina State', 'Notre Dame',
+        'Pittsburgh', 'Stanford', 'Syracuse', 'Virginia', 'Virginia Tech', 'Wake Forest'
+    }
+    
+    # Calculate adjusted win percentage for display
+    strength_of_victory = 0.0
+    for game in schedule_analysis:
+        if game['result'] == 'W':
+            opponent = game['opponent']
+            opp_win_pct = game['opponent_win_pct']
+            
+            if opponent in power4_teams:
+                # Power 4 multiplier: 1.5x opponent win rate, minimum 0.75
+                opponent_value = max(0.75, opp_win_pct * 1.5)
+            else:
+                # Non-Power 4: just use opponent win rate
+                opponent_value = opp_win_pct
+                
+            strength_of_victory += opponent_value
+    
+    # Calculate adjusted win percentage
+    raw_win_pct = team_wins / (team_wins + team_losses) if (team_wins + team_losses) > 0 else 0
+    total_games = team_wins + team_losses
+    
+    if total_games > 0:
+        # Base formula: 40% raw wins, 60% strength of victory
+        adjusted_wins = (0.4 * team_wins) + (0.6 * strength_of_victory)
+        adjusted_win_pct = adjusted_wins / total_games
+    else:
+        adjusted_win_pct = 0
+    
     # Print analysis
     print(f"\n{team_name} Schedule Analysis")
     print("=" * 80)
-    print(f"Team Record: {team_wins}-{team_losses} ({team_wins/(team_wins+team_losses)*100:.1f}%)")
-    print("=" * 80)
-    print(f"{'Week':<4} {'Opponent':<25} {'Result':<6} {'Opp Record':<11} {'Opp Win%':<8} {'Opp Rank':<8}")
-    print("-" * 80)
+    print(f"Overall Record: {overall_wins}-{overall_losses} ({overall_wins/(overall_wins+overall_losses)*100:.1f}%)")
+    print(f"FBS Record: {team_wins}-{team_losses} ({team_wins/(team_wins+team_losses)*100:.1f}%) | Raw Win%: {raw_win_pct:.3f} | Adj Win%: {adjusted_win_pct:.3f}")
+    print("=" * 95)
+    print(f"{'Week':<4} {'Opponent':<25} {'Result':<6} {'Opp Record':<11} {'Opp Win%':<8} {'P4':<3} {'Value':<6} {'Opp Rank':<8}")
+    print("-" * 95)
+    
+    # Define Power 4 teams for table display
+    power4_teams = {
+        # SEC
+        'Alabama', 'Arkansas', 'Auburn', 'Florida', 'Georgia', 'Kentucky', 'Louisiana State', 
+        'Mississippi', 'Mississippi State', 'Missouri', 'South Carolina', 'Tennessee', 
+        'Texas', 'Texas A&M', 'Vanderbilt', 'Oklahoma',
+        
+        # Big Ten  
+        'Illinois', 'Indiana', 'Iowa', 'Maryland', 'Michigan', 'Michigan State', 'Minnesota',
+        'Nebraska', 'Northwestern', 'Ohio State', 'Oregon', 'Penn State', 'Purdue', 
+        'Rutgers', 'Southern California', 'UCLA', 'Washington', 'Wisconsin',
+        
+        # Big 12
+        'Arizona', 'Arizona State', 'Baylor', 'Brigham Young', 'Cincinnati', 'Colorado', 
+        'Houston', 'Iowa State', 'Kansas', 'Kansas State', 'Oklahoma State', 'Texas Christian', 
+        'Texas Tech', 'Utah', 'West Virginia',
+        
+        # ACC
+        'Boston College', 'California', 'Clemson', 'Duke', 'Florida State', 'Georgia Tech',
+        'Louisville', 'Miami (FL)', 'North Carolina', 'North Carolina State', 'Notre Dame',
+        'Pittsburgh', 'Stanford', 'Syracuse', 'Virginia', 'Virginia Tech', 'Wake Forest'
+    }
     
     for game in schedule_analysis:
         week_str = str(game['week']) if game['week'] != "?" else "?"
-        print(f"{week_str:<4} {game['opponent']:<25} {game['result']:<6} {game['opponent_record']:<11} "
-              f"{game['opponent_win_pct']:.3f}    {game['opponent_rank']}")
+        opponent = game['opponent']
+        result = game['result']
+        opp_win_pct = game['opponent_win_pct']
+        
+        # Determine if Power 4 team
+        is_power4 = "Yes" if opponent in power4_teams else "No"
+        
+        # Calculate victory value (only for wins)
+        if result == 'W':
+            if opponent in power4_teams:
+                victory_value = max(0.75, opp_win_pct * 1.5)
+            else:
+                victory_value = opp_win_pct
+            value_str = f"{victory_value:.3f}"
+        else:
+            value_str = "-"
+        
+        print(f"{week_str:<4} {opponent:<25} {result:<6} {game['opponent_record']:<11} "
+              f"{opp_win_pct:.3f}    {is_power4:<3} {value_str:<6} {game['opponent_rank']}")
     
     # Calculate strength of schedule metrics
     total_opp_wins = sum(opponent_records[game['opponent']]['wins'] for game in schedule_analysis)
     total_opp_losses = sum(opponent_records[game['opponent']]['losses'] for game in schedule_analysis)
     avg_opp_win_pct = sum(game['opponent_win_pct'] for game in schedule_analysis) / len(schedule_analysis)
     
-    print("-" * 80)
+    print("-" * 95)
     print(f"Strength of Schedule Metrics (FBS only):")
     print(f"  Total Opponent FBS Wins: {total_opp_wins}")
     print(f"  Total Opponent FBS Losses: {total_opp_losses}")
@@ -748,10 +810,59 @@ def compare_teams(schedule_df, team1_name, team2_name, rankings_dict=None):
         if defeated_opponents:
             defeated_opp_win_pct = sum(opponent_records[opp]['win_pct'] for opp in defeated_opponents) / len(defeated_opponents)
         
+        # Calculate adjusted win percentage
+        # Define Power 4 teams
+        power4_teams = {
+            # SEC
+            'Alabama', 'Arkansas', 'Auburn', 'Florida', 'Georgia', 'Kentucky', 'Louisiana State', 
+            'Mississippi', 'Mississippi State', 'Missouri', 'South Carolina', 'Tennessee', 
+            'Texas', 'Texas A&M', 'Vanderbilt', 'Oklahoma',
+            
+            # Big Ten  
+            'Illinois', 'Indiana', 'Iowa', 'Maryland', 'Michigan', 'Michigan State', 'Minnesota',
+            'Nebraska', 'Northwestern', 'Ohio State', 'Oregon', 'Penn State', 'Purdue', 
+            'Rutgers', 'Southern California', 'UCLA', 'Washington', 'Wisconsin',
+            
+            # Big 12
+            'Arizona', 'Arizona State', 'Baylor', 'Brigham Young', 'Cincinnati', 'Colorado', 
+            'Houston', 'Iowa State', 'Kansas', 'Kansas State', 'Oklahoma State', 'Texas Christian', 
+            'Texas Tech', 'Utah', 'West Virginia',
+            
+            # ACC
+            'Boston College', 'California', 'Clemson', 'Duke', 'Florida State', 'Georgia Tech',
+            'Louisville', 'Miami (FL)', 'North Carolina', 'North Carolina State', 'Notre Dame',
+            'Pittsburgh', 'Stanford', 'Syracuse', 'Virginia', 'Virginia Tech', 'Wake Forest'
+        }
+        
+        # Calculate strength of victory
+        strength_of_victory = 0.0
+        for opponent in defeated_opponents:
+            opp_win_pct = opponent_records[opponent]['win_pct']
+            
+            if opponent in power4_teams:
+                # Power 4 multiplier: 1.5x opponent win rate, minimum 0.75
+                opponent_value = max(0.75, opp_win_pct * 1.5)
+            else:
+                # Non-Power 4: just use opponent win rate
+                opponent_value = opp_win_pct
+                
+            strength_of_victory += opponent_value
+        
+        # Calculate adjusted win percentage
+        total_games = wins + losses
+        if total_games > 0:
+            # Base formula: 40% raw wins, 60% strength of victory
+            adjusted_wins = (0.4 * wins) + (0.6 * strength_of_victory)
+            adjusted_win_pct = adjusted_wins / total_games
+        else:
+            adjusted_win_pct = 0
+        
         team_data[team] = {
             'wins': wins,
             'losses': losses,
             'win_pct': wins / (wins + losses) if (wins + losses) > 0 else 0,
+            'adjusted_win_pct': adjusted_win_pct,
+            'strength_of_victory': strength_of_victory,
             'defeated_opponents': defeated_opponents,
             'lost_to_opponents': lost_to_opponents,
             'all_opponents': all_opponents,
@@ -790,6 +901,8 @@ def compare_teams(schedule_df, team1_name, team2_name, rankings_dict=None):
     print("-" * 55)
     print(f"{'FBS Record':<25} {team_data[team1_name]['wins']}-{team_data[team1_name]['losses']:<14} {team_data[team2_name]['wins']}-{team_data[team2_name]['losses']}")
     print(f"{'Win Percentage':<25} {team_data[team1_name]['win_pct']:.3f}           {team_data[team2_name]['win_pct']:.3f}")
+    print(f"{'Adjusted Win%':<25} {team_data[team1_name]['adjusted_win_pct']:.3f}           {team_data[team2_name]['adjusted_win_pct']:.3f}")
+    print(f"{'Strength of Victory':<25} {team_data[team1_name]['strength_of_victory']:.3f}           {team_data[team2_name]['strength_of_victory']:.3f}")
     print(f"{'Ranking':<25} {team_data[team1_name]['rank']:<15} {team_data[team2_name]['rank']}")
     
     # Strength of Schedule comparison

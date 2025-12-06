@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 year = 2025
-week = 15
+week = 16
 
 this_dir = Path(__file__).parent.parent.parent
 print(this_dir)
@@ -213,15 +213,23 @@ def calculate_strength_of_schedule(schedule_df, teams):
     
     return sos, win_percentages, team_records
 
-def get_rankings(schedule_df, teams, create_plot=False):
-    """Calculate rankings using adjusted win percentage"""
+def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
+    """Calculate rankings using adjusted win percentage
+    
+    Args:
+        schedule_df: DataFrame with game results
+        teams: List of FBS teams
+        create_plot: Whether to create visualization plots
+        use_head_to_head: Whether to apply head-to-head tiebreaking (default: True)
+    """
     # Calculate win-loss records for all FBS teams
     team_records = {}
     team_overall_records = {}
+    conference_champions = set()  # Track conference championship winners
     
     # Initialize records
     for team in teams:
-        team_records[team] = {'wins': 0, 'losses': 0, 'ties': 0, 'opponents': []}
+        team_records[team] = {'wins': 0, 'losses': 0, 'ties': 0, 'opponents': [], 'conf_champ_win': False}
         team_overall_records[team] = {'wins': 0, 'losses': 0, 'ties': 0}
     
     # Get overall records from all games (before FBS filtering)
@@ -229,23 +237,50 @@ def get_rankings(schedule_df, teams, create_plot=False):
     # Filter by week cutoff
     overall_schedule = overall_schedule[overall_schedule["Wk"] <= week]
     
+    # Identify conference championship games (week 16) and track winners
+    week16_games = overall_schedule[overall_schedule["Wk"] == 16]
+    for _, game in week16_games.iterrows():
+        winner = game["Winner"]
+        loser = game["Loser"]
+        
+        if winner in teams and loser in teams:
+            conference_champions.add(winner)
+            print(f"Conference Championship: {winner} defeated {loser}")
+    
     for _, game in overall_schedule.iterrows():
         winner = game["Winner"]
         loser = game["Loser"]
+        game_week = game.get("Wk", 0)
         
         if winner in team_overall_records:
             team_overall_records[winner]['wins'] += 1
         if loser in team_overall_records:
-            team_overall_records[loser]['losses'] += 1
+            # Don't penalize conference championship game losses
+            if game_week == 16 and loser in teams and winner in teams:
+                print(f"Not penalizing {loser} for conference championship loss to {winner}")
+                # Don't count this loss in overall record
+            else:
+                team_overall_records[loser]['losses'] += 1
     
     # Count wins and losses from FBS games only, track defeated and lost-to opponents
     for _, game in schedule_df.iterrows():
         winner = game["Winner"]
         loser = game["Loser"]
+        game_week = game.get("Wk", 0)
         
         if winner in team_records and loser in team_records:
             team_records[winner]['wins'] += 1
-            team_records[loser]['losses'] += 1
+            
+            # Mark conference championship wins
+            if game_week == 16:
+                team_records[winner]['conf_champ_win'] = True
+            
+            # Don't count conference championship losses against teams
+            if game_week == 16:
+                print(f"Not counting conference championship loss for {loser}")
+            else:
+                team_records[loser]['losses'] += 1
+                
             team_records[winner]['opponents'].append(('defeated', loser))
             team_records[loser]['opponents'].append(('lost_to', winner))
     
@@ -325,7 +360,10 @@ def get_rankings(schedule_df, teams, create_plot=False):
             # Base formula: 40% raw wins, 60% strength of victory
             adjusted_wins = (0.4 * record['wins']) + (0.6 * strength_of_victory)
             
-            # No penalties applied
+            # Add conference championship bonus (equivalent to 0.5 extra wins)
+            if record['conf_champ_win']:
+                adjusted_wins += 0.5
+                print(f"Conference championship bonus applied to {team}")
             
             adjusted_win_pct = adjusted_wins / total_games
         else:
@@ -353,7 +391,8 @@ def get_rankings(schedule_df, teams, create_plot=False):
             'defeated_opponents': defeated_opponents,
             'lost_to_opponents': lost_to_opponents,
             'h2h_tiebreaker': False,  # Track if head-to-head tiebreaker was applied
-            'h2h_beaten_team': None   # Track which team was beaten in head-to-head
+            'h2h_beaten_team': None,  # Track which team was beaten in head-to-head
+            'conf_champ_win': record['conf_champ_win']  # Track conference championship wins
         })
     
     # Apply head-to-head tiebreaker only for teams with very similar adjusted win percentages
@@ -400,13 +439,19 @@ def get_rankings(schedule_df, teams, create_plot=False):
     # Sort by adjusted win percentage first (primary ranking criteria)
     team_stats.sort(key=lambda x: x['adjusted_win_pct'], reverse=True)
     
-    # Apply head-to-head tiebreaker only for teams with very similar adjusted win percentages
-    team_stats = head_to_head_tiebreaker(team_stats)
+    # Apply head-to-head tiebreaker only if enabled and for teams with very similar adjusted win percentages
+    if use_head_to_head:
+        team_stats = head_to_head_tiebreaker(team_stats)
     
     print("Final Rankings (Power 4 Conference Weighted Win Percentage):")
-    print("=" * 105)
-    print(f"{'Rank':<4} {'Team':<25} {'Overall Record':<15} {'FBS Record':<12} {'Raw Win%':<9} {'Adj Win%':<9} {'P4 Wins':<8} {'SoV':<7} {'H2H Beat':<12}")
-    print("=" * 105)
+    if use_head_to_head:
+        print("=" * 120)
+        print(f"{'Rank':<4} {'Team':<25} {'Overall Record':<15} {'FBS Record':<12} {'Raw Win%':<9} {'Adj Win%':<9} {'P4 Wins':<8} {'SoV':<7} {'H2H Beat':<12} {'Conf Champ':<10}")
+        print("=" * 120)
+    else:
+        print("=" * 110)
+        print(f"{'Rank':<4} {'Team':<25} {'Overall Record':<15} {'FBS Record':<12} {'Raw Win%':<9} {'Adj Win%':<9} {'P4 Wins':<8} {'SoV':<7} {'Conf Champ':<10}")
+        print("=" * 110)
     for rank, stats in enumerate(team_stats[:25], start=1):
         team = stats['team']
         wins = stats['wins']
@@ -435,9 +480,20 @@ def get_rankings(schedule_df, teams, create_plot=False):
         # Head-to-head indicator - show beaten team name
         h2h_indicator = stats.get('h2h_beaten_team', '') if stats.get('h2h_tiebreaker', False) else ""
         
-        print(f"{rank:<4} {team:<25} {overall_record_str:<15} {fbs_record_str:<12} {raw_win_pct:.3f}     {adjusted_win_pct:.3f}     {power4_wins:<8} {strength_of_victory:.3f} {h2h_indicator:<12}")
+        # Conference championship indicator
+        conf_champ_indicator = "YES" if stats.get('conf_champ_win', False) else ""
+        
+        if use_head_to_head:
+            print(f"{rank:<4} {team:<25} {overall_record_str:<15} {fbs_record_str:<12} {raw_win_pct:.3f}     {adjusted_win_pct:.3f}     {power4_wins:<8} {strength_of_victory:.3f} {h2h_indicator:<12} {conf_champ_indicator:<10}")
+        else:
+            print(f"{rank:<4} {team:<25} {overall_record_str:<15} {fbs_record_str:<12} {raw_win_pct:.3f}     {adjusted_win_pct:.3f}     {power4_wins:<8} {strength_of_victory:.3f} {conf_champ_indicator:<10}")
     
-    print("\nLegend: H2H Beat = Team that was beaten head-to-head to earn higher ranking")
+    if use_head_to_head:
+        print("\nLegend: H2H Beat = Team that was beaten head-to-head to earn higher ranking")
+        print("        Conf Champ = Conference championship winner (+0.5 adjusted win bonus)")
+    else:
+        print("\nLegend: Conf Champ = Conference championship winner (+0.5 adjusted win bonus)")
+        print("        Rankings based purely on adjusted win percentage (no head-to-head tiebreaking)")
     
     # Create scatter plot for top 25 if requested (using adjusted win % for y-axis)
     if create_plot:
@@ -964,6 +1020,8 @@ def main():
                         help='Compare two teams (e.g., --compare "Ohio State" "Michigan")')
     parser.add_argument('--plot', action='store_true',
                         help='Generate scatter plot for top 25 teams (adjusted win%% vs SOS)')
+    parser.add_argument('--no-h2h', action='store_true',
+                        help='Disable head-to-head tiebreaking (rank purely by adjusted win%%)')
     
     args = parser.parse_args()
     
@@ -971,24 +1029,27 @@ def main():
     global year
     year = args.year
     
+    # Determine if head-to-head should be used
+    use_h2h = not args.no_h2h
+    
     schedule = get_schedule(update=args.update)
     teams = get_teams(schedule)
     fbs_schedule = filter_schedule_fbs_only(schedule, teams)
     
     if args.compare:
         # Generate rankings first to get rank information
-        rankings = get_rankings(fbs_schedule, teams, create_plot=False)
+        rankings = get_rankings(fbs_schedule, teams, create_plot=False, use_head_to_head=use_h2h)
         print("\n" + "="*50)
         # Then compare the two teams
         compare_teams(fbs_schedule, args.compare[0], args.compare[1], rankings)
     elif args.team:
         # Generate rankings first to get rank information
-        rankings = get_rankings(fbs_schedule, teams, create_plot=args.plot)
+        rankings = get_rankings(fbs_schedule, teams, create_plot=args.plot, use_head_to_head=use_h2h)
         print("\n" + "="*50)
         # Then analyze the specific team
         get_team_schedule(fbs_schedule, args.team, rankings)
     else:
-        rankings = get_rankings(fbs_schedule, teams, create_plot=args.plot)
+        rankings = get_rankings(fbs_schedule, teams, create_plot=args.plot, use_head_to_head=use_h2h)
 
 
 if __name__ == "__main__":

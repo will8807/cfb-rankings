@@ -10,6 +10,13 @@ import matplotlib.pyplot as plt
 year = 2025
 week = 16
 
+def get_championship_week(season_year):
+    """Return the week number for conference championship games based on season year"""
+    if season_year >= 2024:
+        return 16  # Starting in 2024, championship week moved to week 16
+    else:
+        return 15  # Prior to 2024, championship week was week 15
+
 this_dir = Path(__file__).parent.parent.parent
 print(this_dir)
 
@@ -31,6 +38,10 @@ def get_schedule(update=False):
                     # Strip again after removing rankings
                     df[col] = df[col].str.strip()
             
+            # Convert week column to integer for filtering
+            if "Wk" in df.columns:
+                df["Wk"] = pd.to_numeric(df["Wk"], errors="coerce")
+            
             print(f"Using local data from: {csv_path}")
             return df
         else:
@@ -45,12 +56,57 @@ def get_schedule(update=False):
     options.add_argument("--headless")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(options=options)
-    driver.get(url)
-    html = driver.page_source
-    soup = BeautifulSoup(html, "html.parser")
-    table = soup.find("table", id="schedule")
-    driver.quit()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--disable-features=VizDisplayCompositor")
+    
+    try:
+        driver = webdriver.Chrome(options=options)
+        # Set page load timeout
+        driver.set_page_load_timeout(30)
+        print(f"Navigating to: {url}")
+        driver.get(url)
+        
+        # Wait a moment for dynamic content to load
+        import time
+        time.sleep(3)
+        
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table", id="schedule")
+        
+        if table is None:
+            print("WARNING: Schedule table not found on page")
+            print(f"Page title: {driver.title}")
+            print(f"Page content length: {len(html)} characters")
+            
+            # Try to find any tables to debug
+            all_tables = soup.find_all("table")
+            print(f"Found {len(all_tables)} total tables on page")
+            if all_tables:
+                for i, t in enumerate(all_tables[:3]):  # Show first 3 tables
+                    table_id = t.get('id', 'no-id')
+                    table_class = t.get('class', 'no-class')
+                    print(f"  Table {i+1}: id='{table_id}', class='{table_class}'")
+            
+            # Check for common error indicators
+            if "404" in html or "Not Found" in html:
+                raise Exception("Page not found (404)")
+            elif "403" in html or "Forbidden" in html:
+                raise Exception("Access forbidden (403)")
+            elif len(html) < 1000:
+                raise Exception(f"Page content too small ({len(html)} chars) - likely blocked or error page")
+            else:
+                raise Exception("Schedule table not found - page structure may have changed")
+        
+        driver.quit()
+    except Exception as e:
+        try:
+            driver.quit()
+        except:
+            pass
+        raise Exception(f"Web scraping failed: {e}")
 
     headers = []
     thead = table.find_next("thead")
@@ -74,6 +130,10 @@ def get_schedule(update=False):
             df[col] = df[col].str.replace(r"\(\d+\)", "", regex=True)
             # Strip whitespace again after removing rankings
             df[col] = df[col].str.strip()
+
+    # Convert week column to integer for filtering
+    if "Wk" in df.columns:
+        df["Wk"] = pd.to_numeric(df["Wk"], errors="coerce")
 
     # Save locally
     df.to_csv(Path(this_dir).joinpath("data",f"schedule_{year}.csv"), index=False)
@@ -227,6 +287,9 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
     team_overall_records = {}
     conference_champions = set()  # Track conference championship winners
     
+    # Get the championship week for this season
+    championship_week = get_championship_week(year)
+    
     # Initialize records
     for team in teams:
         team_records[team] = {'wins': 0, 'losses': 0, 'ties': 0, 'opponents': [], 'conf_champ_win': False}
@@ -237,9 +300,9 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
     # Filter by week cutoff
     overall_schedule = overall_schedule[overall_schedule["Wk"] <= week]
     
-    # Identify conference championship games (week 16) and track winners
-    week16_games = overall_schedule[overall_schedule["Wk"] == 16]
-    for _, game in week16_games.iterrows():
+    # Identify conference championship games and track winners
+    championship_games = overall_schedule[overall_schedule["Wk"] == championship_week]
+    for _, game in championship_games.iterrows():
         winner = game["Winner"]
         loser = game["Loser"]
         
@@ -256,7 +319,7 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
             team_overall_records[winner]['wins'] += 1
         if loser in team_overall_records:
             # Don't penalize conference championship game losses
-            if game_week == 16 and loser in teams and winner in teams:
+            if game_week == championship_week and loser in teams and winner in teams:
                 print(f"Not penalizing {loser} for conference championship loss to {winner}")
                 # Don't count this loss in overall record
             else:
@@ -272,11 +335,11 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
             team_records[winner]['wins'] += 1
             
             # Mark conference championship wins
-            if game_week == 16:
+            if game_week == championship_week:
                 team_records[winner]['conf_champ_win'] = True
             
             # Don't count conference championship losses against teams
-            if game_week == 16:
+            if game_week == championship_week:
                 print(f"Not counting conference championship loss for {loser}")
             else:
                 team_records[loser]['losses'] += 1

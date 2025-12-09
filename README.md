@@ -9,7 +9,7 @@ The ranking system uses a sophisticated multi-step process to evaluate teams bas
 ```mermaid
 flowchart TD
     A[Start: Raw Game Data] --> B[Filter FBS Teams Only<br/>Through Week 16]
-    B --> C[Identify Conference Championships<br/>All Week 16 Games]
+    B --> C[Identify Conference Championships<br/>Week 16 (2024+) or Week 15 (2023-)]
     
     C --> C1[Track Conference Champions]
     C --> C2[Don't Count Championship Losses<br/>Against Losing Teams]
@@ -53,8 +53,13 @@ flowchart TD
 
 ## Key Features
 
-### Conference Championship System (Week 16)
-- **All week 16 games are treated as conference championships**
+### Conference Championship System
+
+The championship week depends on the season year:
+- **2024 and later: Week 16 games are treated as conference championships**
+- **2023 and earlier: Week 15 games are treated as conference championships**
+
+Conference championship benefits:
 - **Conference champions receive +0.5 adjusted win bonus**
 - **Teams are NOT penalized for losing conference championship games**
 - Championship games don't count as losses in team records

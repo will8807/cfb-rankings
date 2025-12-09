@@ -12,6 +12,7 @@ dependencies = [
     "beautifulsoup4",
     "pandas",
     "matplotlib>=3.10.7",
+    "requests>=2.32.5",
 ]
 
 

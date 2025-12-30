@@ -17,6 +17,55 @@ def get_championship_week(season_year):
     else:
         return 15  # Prior to 2024, championship week was week 15
 
+def is_championship_game(game_row):
+    """Determine if a game is a conference championship based on Notes column and championship week"""
+    notes = str(game_row.get("Notes", "")).lower()
+    
+    # Check for explicit championship mentions in Notes (most reliable method)
+    championship_indicators = [
+        "championship", "title game", "conference championship", 
+        "sec championship", "big ten championship", "big 12 championship", 
+        "acc championship", "pac-12 championship", "american athletic conference championship",
+        "conference usa championship", "mac championship", "sun belt championship",
+        "mountain west championship", "mwc championship"
+    ]
+    
+    for indicator in championship_indicators:
+        if indicator in notes:
+            return True
+    
+    # Get championship week for this season
+    game_week = game_row.get("Wk", 0)
+    championship_week = get_championship_week(year)  # Use global year variable
+    
+    # Check for neutral site games in championship week (marked with 'N')
+    location = ""
+    if hasattr(game_row, 'iloc'):
+        try:
+            # The unnamed column is typically at index 6 (between the two Pts columns)
+            location = str(game_row.iloc[6]) if len(game_row) > 6 else ""
+        except:
+            location = ""
+    
+    if location.strip() == "N" and game_week == championship_week:
+        return True
+    
+    # For years with irregular schedules or different championship structures,
+    # be more conservative and primarily rely on explicit notes and neutral sites
+    if year <= 2021:
+        # For 2021 and earlier, only trust explicit championship mentions and clear neutral site games
+        return False
+    
+    # For recent years (2022+) where data might be less explicit,
+    # use Friday/Saturday games in championship week as a fallback heuristic
+    if game_week == championship_week:
+        day = str(game_row.get("Day", "")).lower()
+        if day in ["fri", "sat"]:
+            # This is likely a championship game based on timing
+            return True
+    
+    return False
+
 this_dir = Path(__file__).parent.parent.parent
 print(this_dir)
 
@@ -301,25 +350,26 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
     overall_schedule = overall_schedule[overall_schedule["Wk"] <= week]
     
     # Identify conference championship games and track winners
-    championship_games = overall_schedule[overall_schedule["Wk"] == championship_week]
-    for _, game in championship_games.iterrows():
-        winner = game["Winner"]
-        loser = game["Loser"]
-        
-        if winner in teams and loser in teams:
-            conference_champions.add(winner)
-            print(f"Conference Championship: {winner} defeated {loser}")
-    
+    for _, game in overall_schedule.iterrows():
+        if is_championship_game(game):
+            winner = game["Winner"]
+            loser = game["Loser"]
+            
+            if winner in teams and loser in teams:
+                conference_champions.add(winner)
+                print(f"Conference Championship: {winner} defeated {loser}")
+
+    # Count overall wins and losses for all teams
     for _, game in overall_schedule.iterrows():
         winner = game["Winner"]
         loser = game["Loser"]
-        game_week = game.get("Wk", 0)
+        is_champ_game = is_championship_game(game)
         
         if winner in team_overall_records:
             team_overall_records[winner]['wins'] += 1
         if loser in team_overall_records:
             # Don't penalize conference championship game losses
-            if game_week == championship_week and loser in teams and winner in teams:
+            if is_champ_game and loser in teams and winner in teams:
                 print(f"Not penalizing {loser} for conference championship loss to {winner}")
                 # Don't count this loss in overall record
             else:
@@ -329,17 +379,17 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
     for _, game in schedule_df.iterrows():
         winner = game["Winner"]
         loser = game["Loser"]
-        game_week = game.get("Wk", 0)
+        is_champ_game = is_championship_game(game)
         
         if winner in team_records and loser in team_records:
             team_records[winner]['wins'] += 1
             
             # Mark conference championship wins
-            if game_week == championship_week:
+            if is_champ_game:
                 team_records[winner]['conf_champ_win'] = True
             
             # Don't count conference championship losses against teams
-            if game_week == championship_week:
+            if is_champ_game:
                 print(f"Not counting conference championship loss for {loser}")
             else:
                 team_records[loser]['losses'] += 1
@@ -457,6 +507,10 @@ def get_rankings(schedule_df, teams, create_plot=False, use_head_to_head=True):
             'h2h_beaten_team': None,  # Track which team was beaten in head-to-head
             'conf_champ_win': record['conf_champ_win']  # Track conference championship wins
         })
+    
+    # Filter out teams with very few FBS games (transition teams, incomplete schedules)
+    min_fbs_games = 5  # Require at least 5 FBS games to be ranked
+    team_stats = [team for team in team_stats if team['total_games'] >= min_fbs_games]
     
     # Apply head-to-head tiebreaker only for teams with very similar adjusted win percentages
     def head_to_head_tiebreaker(teams):
@@ -967,19 +1021,48 @@ def compare_teams(schedule_df, team1_name, team2_name, rankings_dict=None):
                 
             strength_of_victory += opponent_value
         
+        # Check for championship games and losses (for detailed breakdown)
+        championship_wins = 0
+        championship_losses = 0
+        championship_games_details = []
+        
+        for _, game in team_games.iterrows():
+            if is_championship_game(game):
+                if game["Winner"] == team:
+                    championship_wins += 1
+                    championship_games_details.append(f"Won vs {game['Loser']} (Week {game.get('Wk', '?')})")
+                else:
+                    championship_losses += 1
+                    championship_games_details.append(f"Lost to {game['Winner']} (Week {game.get('Wk', '?')})")
+        
+        # Calculate FBS record (excluding championship losses due to championship loss protection)
+        fbs_wins = wins
+        fbs_losses = losses - championship_losses
+        fbs_total_games = fbs_wins + fbs_losses
+        
+        # Calculate championship bonus
+        championship_bonus = championship_wins * 0.5
+        
         # Calculate adjusted win percentage
         total_games = wins + losses
         if total_games > 0:
-            # Base formula: 40% raw wins, 60% strength of victory
-            adjusted_wins = (0.4 * wins) + (0.6 * strength_of_victory)
-            adjusted_win_pct = adjusted_wins / total_games
+            # Base formula: 40% raw wins, 60% strength of victory, plus championship bonus
+            adjusted_wins = (0.4 * fbs_wins) + (0.6 * strength_of_victory) + championship_bonus
+            adjusted_win_pct = adjusted_wins / fbs_total_games if fbs_total_games > 0 else 0
         else:
             adjusted_win_pct = 0
         
         team_data[team] = {
             'wins': wins,
             'losses': losses,
+            'fbs_wins': fbs_wins,
+            'fbs_losses': fbs_losses,
+            'championship_wins': championship_wins,
+            'championship_losses': championship_losses,
+            'championship_bonus': championship_bonus,
+            'championship_games_details': championship_games_details,
             'win_pct': wins / (wins + losses) if (wins + losses) > 0 else 0,
+            'fbs_win_pct': fbs_wins / fbs_total_games if fbs_total_games > 0 else 0,
             'adjusted_win_pct': adjusted_win_pct,
             'strength_of_victory': strength_of_victory,
             'defeated_opponents': defeated_opponents,
@@ -1018,11 +1101,50 @@ def compare_teams(schedule_df, team1_name, team2_name, rankings_dict=None):
     print(f"\nBASIC STATS:")
     print(f"{'Metric':<25} {team1_name:<15} {team2_name:<15}")
     print("-" * 55)
-    print(f"{'FBS Record':<25} {team_data[team1_name]['wins']}-{team_data[team1_name]['losses']:<14} {team_data[team2_name]['wins']}-{team_data[team2_name]['losses']}")
-    print(f"{'Win Percentage':<25} {team_data[team1_name]['win_pct']:.3f}           {team_data[team2_name]['win_pct']:.3f}")
+    print(f"{'Overall Record':<25} {team_data[team1_name]['wins']}-{team_data[team1_name]['losses']:<14} {team_data[team2_name]['wins']}-{team_data[team2_name]['losses']}")
+    print(f"{'FBS Record (for ranking)':<25} {team_data[team1_name]['fbs_wins']}-{team_data[team1_name]['fbs_losses']:<14} {team_data[team2_name]['fbs_wins']}-{team_data[team2_name]['fbs_losses']}")
+    print(f"{'Overall Win%':<25} {team_data[team1_name]['win_pct']:.3f}           {team_data[team2_name]['win_pct']:.3f}")
+    print(f"{'FBS Win%':<25} {team_data[team1_name]['fbs_win_pct']:.3f}           {team_data[team2_name]['fbs_win_pct']:.3f}")
     print(f"{'Adjusted Win%':<25} {team_data[team1_name]['adjusted_win_pct']:.3f}           {team_data[team2_name]['adjusted_win_pct']:.3f}")
     print(f"{'Strength of Victory':<25} {team_data[team1_name]['strength_of_victory']:.3f}           {team_data[team2_name]['strength_of_victory']:.3f}")
+    print(f"{'Championship Bonus':<25} {team_data[team1_name]['championship_bonus']:.3f}           {team_data[team2_name]['championship_bonus']:.3f}")
     print(f"{'Ranking':<25} {team_data[team1_name]['rank']:<15} {team_data[team2_name]['rank']}")
+
+    # Championship game details
+    for i, team in enumerate(teams):
+        if team_data[team]['championship_games_details']:
+            print(f"\n{team.upper()} CHAMPIONSHIP GAMES:")
+            for detail in team_data[team]['championship_games_details']:
+                print(f"  • {detail}")
+        elif team_data[team]['championship_wins'] == 0 and team_data[team]['championship_losses'] == 0:
+            print(f"\n{team.upper()} CHAMPIONSHIP GAMES: None")
+
+    # Explain championship loss protection if relevant
+    team1_champ_losses = team_data[team1_name]['championship_losses']
+    team2_champ_losses = team_data[team2_name]['championship_losses']
+    if team1_champ_losses > 0 or team2_champ_losses > 0:
+        print(f"\nCHAMPIONSHIP LOSS PROTECTION:")
+        print(f"Championship game losses are excluded from FBS record calculation.")
+        if team1_champ_losses > 0:
+            print(f"• {team1_name}: {team1_champ_losses} championship loss(es) excluded from ranking")
+        if team2_champ_losses > 0:
+            print(f"• {team2_name}: {team2_champ_losses} championship loss(es) excluded from ranking")
+
+    # Adjusted win percentage calculation breakdown
+    print(f"\nADJUSTED WIN% CALCULATION:")
+    print(f"Formula: (40% × FBS Wins + 60% × Strength of Victory + Championship Bonus) ÷ FBS Games")
+    print(f"\n{team1_name}:")
+    team1_fbs_games = team_data[team1_name]['fbs_wins'] + team_data[team1_name]['fbs_losses']
+    if team1_fbs_games > 0:
+        team1_calc = f"(0.4 × {team_data[team1_name]['fbs_wins']} + 0.6 × {team_data[team1_name]['strength_of_victory']:.3f} + {team_data[team1_name]['championship_bonus']:.1f}) ÷ {team1_fbs_games}"
+        team1_numerator = (0.4 * team_data[team1_name]['fbs_wins']) + (0.6 * team_data[team1_name]['strength_of_victory']) + team_data[team1_name]['championship_bonus']
+        print(f"  {team1_calc} = {team1_numerator:.3f} ÷ {team1_fbs_games} = {team_data[team1_name]['adjusted_win_pct']:.3f}")
+    print(f"\n{team2_name}:")
+    team2_fbs_games = team_data[team2_name]['fbs_wins'] + team_data[team2_name]['fbs_losses']
+    if team2_fbs_games > 0:
+        team2_calc = f"(0.4 × {team_data[team2_name]['fbs_wins']} + 0.6 × {team_data[team2_name]['strength_of_victory']:.3f} + {team_data[team2_name]['championship_bonus']:.1f}) ÷ {team2_fbs_games}"
+        team2_numerator = (0.4 * team_data[team2_name]['fbs_wins']) + (0.6 * team_data[team2_name]['strength_of_victory']) + team_data[team2_name]['championship_bonus']
+        print(f"  {team2_calc} = {team2_numerator:.3f} ÷ {team2_fbs_games} = {team_data[team2_name]['adjusted_win_pct']:.3f}")
     
     # Strength of Schedule comparison
     print(f"\nSTRENGTH OF SCHEDULE:")
